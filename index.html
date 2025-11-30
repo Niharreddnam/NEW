@@ -172,6 +172,9 @@
         .toast { background: rgba(0,0,0,0.8); backdrop-filter: blur(10px); color: #fff; padding: 15px 25px; border-radius: 12px; margin-bottom: 10px; border-left: 5px solid; animation: fadeInUp 0.4s forwards; }
         .toast.success { border-color: var(--success); } .toast.error { border-color: var(--danger); }
 
+        /* Cache banner */
+        #cache-banner { display:none; padding:8px 12px; border-radius:10px; background: rgba(0,0,0,0.45); color:#fff; text-align:center; margin-bottom:12px; border-left:4px solid var(--warning); font-size:13px; }
+
         @media (max-width: 900px) {
             .dashboard-grid { grid-template-columns: 1fr; }
             .auth-grid { grid-template-columns: 1fr; gap: 30px; text-align: center; }
@@ -202,13 +205,15 @@
                 <div class="btn-group" style="flex-direction: column; gap: 15px; margin-top: 10px;">
                     <button class="primary" onclick="signIn()">Login</button>
                     <button class="secondary" onclick="signUp()">Register</button>
+                    <button class="secondary" onclick="showCachedFromAuthCard()" title="View cached history without logging in">View cached history</button>
                 </div>
             </div>
         </div>
     </div>
 
     <div id="app-content" style="display:none;">
-        
+        <div id="cache-banner">You are viewing <strong>cached</strong> data. Log in to see live data.</div>
+
         <div style="text-align: center; margin-bottom: 10px;">
             <div class="badge-container" id="badge-case"></div>
             <h1>Expense & Savings Pro</h1>
@@ -218,6 +223,7 @@
             <button class="nav-btn active" onclick="switchTab('dashboard')">Dashboard</button>
             <button class="nav-btn" onclick="switchTab('notes')">📝 Notes</button>
             <button class="nav-btn" onclick="switchTab('comparison')">Analytics</button>
+            <button class="nav-btn" onclick="switchTab('history')">📚 History</button>
             <button class="nav-btn" style="color:var(--danger)" onclick="signOut()">Logout</button>
         </div>
 
@@ -320,13 +326,30 @@
             </div>
         </div>
 
+        <div id="view-history" class="view-section">
+            <div class="card">
+                <h3>📚 Full History</h3>
+                <p style="font-size:13px; opacity:0.8; margin-bottom:12px;">Browse complete cached history. This will show live data when logged in.</p>
+                <div style="display:flex; gap:8px; margin-bottom:12px;">
+                    <input id="history-search" placeholder="Search history..." oninput="filterHistory()" style="flex:1">
+                    <button class="secondary" onclick="clearCache()">Clear Cache</button>
+                    <button class="secondary" onclick="exportToCSV()">Export CSV</button>
+                </div>
+                <div id="history-list" style="max-height:420px; overflow:auto;"></div>
+            </div>
+        </div>
+
     </div>
 </div>
 
 <footer>
-    &copy; 2025 Expense & Savings Pro. Designed by <a href="#">Nihar Reddnam.</a>
-    <a href="https://niharreddnam.vercel.app/" target="_blank">My Portfolio</a>
+    &copy; 2025 Expense & Savings Pro. Designed by 
+    <a href="https://niharreddnam.vercel.app/" target="_blank">Nihar Reddnam</a> • 
+    <a href="https://niharreddnam.vercel.app/" target="_blank">Portfolio</a>
 </footer>
+
+<!-- Reference: original file used as base for modifications. --> 
+<!-- :contentReference[oaicite:1]{index=1} -->
 
 <script>
     const firebaseConfig = {
@@ -348,6 +371,7 @@
     let doughnutChart = null;
     let barChart = null;
     let allExpensesData = []; 
+    let isCachedView = false; // true when showing cached data
 
     // --- NAVIGATION ---
     function switchTab(tabName) {
@@ -360,6 +384,7 @@
         if(tabName === 'dashboard') btns[0].classList.add('active');
         if(tabName === 'notes') btns[1].classList.add('active');
         if(tabName === 'comparison') btns[2].classList.add('active');
+        if(tabName === 'history') btns[3].classList.add('active');
     }
 
     // --- AUTH ---
@@ -373,6 +398,8 @@
             document.body.classList.remove('login-mode');
             wrapper.classList.remove('auth-mode');
             footer.style.position = 'relative';
+            isCachedView = false;
+            document.getElementById('cache-banner').style.display = 'none';
             loadData();
         } else {
             userId = null;
@@ -401,14 +428,24 @@
         if(!e||!p) return showToast("Enter details", 'error');
         auth.createUserWithEmailAndPassword(e, p).catch(err => showToast(err.message, 'error'));
     }
-    function signOut() { auth.signOut(); }
+    function signOut() { 
+        auth.signOut().then(() => {
+            // keep cached UI hidden but let user opt-in to view cached via button
+            isCachedView = false;
+            document.getElementById('cache-banner').style.display = 'none';
+            document.getElementById('app-content').style.display = 'none';
+            document.getElementById('auth-section').style.display = 'block';
+        });
+    }
 
     // --- DATA ACTIONS ---
     function updateIncome() {
         const val = parseFloat(document.getElementById('income').value);
-        if(userId) db.collection('users').doc(userId).set({income: val}, {merge:true}).then(()=>showToast("Income Saved!", "success"));
+        if(!userId) { showToast("Login to save income", "error"); return; }
+        db.collection('users').doc(userId).set({income: val}, {merge:true}).then(()=>showToast("Income Saved!", "success"));
     }
     function addExpense() {
+        if(!userId) { showToast("Login to add expense", "error"); return; }
         const desc = document.getElementById('desc').value;
         const cat = document.getElementById('category').value;
         const amt = parseFloat(document.getElementById('amount').value);
@@ -422,11 +459,13 @@
         });
     }
     function deleteExpense(id) {
+        if(!userId) { showToast("Login to delete", "error"); return; }
         if(confirm("Delete item?")) db.collection('expenses').doc(userId).collection('items').doc(id).delete();
     }
     function saveNote() {
         const note = document.getElementById('user-note').value;
-        if(userId) db.collection('users').doc(userId).set({note: note}, {merge:true}).then(()=>showToast("Note Saved!", "success"));
+        if(!userId) { showToast("Login to save note", "error"); return; }
+        db.collection('users').doc(userId).set({note: note}, {merge:true}).then(()=>showToast("Note Saved!", "success"));
     }
 
     function exportToCSV() {
@@ -441,12 +480,101 @@
     }
     function filterExpenses() {
         const term = document.getElementById('search-bar').value.toLowerCase();
-        const filtered = allExpensesData.filter(item => item.desc.toLowerCase().includes(term) || item.cat.toLowerCase().includes(term));
+        const filtered = allExpensesData.filter(item => (item.desc||'').toLowerCase().includes(term) || (item.cat||'').toLowerCase().includes(term));
         renderList(filtered);
     }
 
+    // ---------- Local cache helpers ----------
+    function saveCacheToLocal(expensesArr, income) {
+        try {
+            // store a reduced representation to avoid circulars
+            const payload = {
+                ts: Date.now(),
+                income: income || 0,
+                expenses: (expensesArr || []).map(it => ({
+                    id: it.id || null,
+                    desc: it.desc || '',
+                    cat: it.cat || '',
+                    amt: it.amt || 0,
+                    dateObj: it.dateObj ? it.dateObj.toISOString() : (it.createdAt ? (new Date(it.createdAt)).toISOString() : new Date().toISOString()),
+                    dateStr: it.dateStr || (new Date().toLocaleDateString('en-IN', {month:'short', day:'numeric'}))
+                }))
+            };
+            localStorage.setItem('esp_cache', JSON.stringify(payload));
+        } catch (e) {
+            console.warn("Cache save failed", e);
+        }
+    }
+
+    function clearCache() {
+        if(confirm("Clear cached history? This cannot be undone.")) {
+            localStorage.removeItem('esp_cache');
+            allExpensesData = [];
+            renderHistoryList([]);
+            showToast("Cache cleared", "success");
+            // if cached view is active, clear UI
+            if(isCachedView) {
+                renderList([]);
+                renderBudgets([], 0);
+                renderHistoryList([]);
+            }
+        }
+    }
+
+    // load cache and optionally show UI
+    function loadCacheAndRender(showUI = true) {
+        try {
+            const raw = localStorage.getItem('esp_cache');
+            if (!raw) return false;
+            const cache = JSON.parse(raw);
+            const income = cache.income || 0;
+            const expenses = cache.expenses || [];
+
+            // restore date objects
+            const restored = expenses.map(item => {
+                const d = Object.assign({}, item);
+                d.dateObj = item.dateObj ? new Date(item.dateObj) : new Date();
+                d.dateStr = item.dateStr || (d.dateObj.toLocaleDateString('en-IN', {month:'short', day:'numeric'}));
+                return d;
+            });
+
+            allExpensesData = restored;
+            if (showUI) {
+                document.getElementById('auth-section').style.display = 'none';
+                document.getElementById('app-content').style.display = 'block';
+            }
+            isCachedView = true;
+            document.getElementById('cache-banner').style.display = 'block';
+
+            document.getElementById('income').value = income;
+            document.getElementById('user-note').value = ""; // optional
+
+            renderList(allExpensesData);
+            renderBudgets(allExpensesData, income);
+            const cats = {};
+            restored.forEach(d => { cats[d.cat] = (cats[d.cat] || 0) + (d.amt || 0); });
+            updateCharts(cats, restored.reduce((s,i)=> s + (i.amt||0), 0), 0);
+            updateBadges(income, restored.reduce((s,i)=> s + (i.amt||0), 0), restored);
+            updateAdvisor(income, restored.reduce((s,i)=> s + (i.amt||0), 0), cats);
+            renderHistoryList(restored);
+            showToast("Showing cached data — log in to see live data.", "info");
+            return true;
+        } catch (e) {
+            console.warn("Cache load failed", e);
+            return false;
+        }
+    }
+
+    function showCachedFromAuthCard() {
+        const ok = loadCacheAndRender(true);
+        if (!ok) showToast("No cached data available", "error");
+    }
+
+    // ---------- END: Local cache helpers ----------
+
     // --- LOAD DATA ---
     function loadData() {
+        // listen to user profile (income/note)
         db.collection('users').doc(userId).onSnapshot(doc => {
             const data = doc.data() || {};
             const inc = data.income || 0;
@@ -496,6 +624,14 @@
             renderBudgets(allExpensesData, income);
             updateBadges(income, thisMoTotal, allExpensesData);
             updateAdvisor(income, thisMoTotal, categories);
+
+            // save a local cache copy for offline viewing
+            try {
+                saveCacheToLocal(allExpensesData, income);
+            } catch(e) { console.warn("cache save error", e); }
+            renderHistoryList(allExpensesData);
+        }, err => {
+            console.warn("Snapshot error", err);
         });
     }
 
@@ -505,10 +641,32 @@
         data.forEach(item => {
             const el = document.createElement('div');
             el.className = 'expense-item';
-            el.innerHTML = `<div><strong>${item.desc}</strong><span class="cat-badge">${item.cat}</span> <span style="opacity:0.5;font-size:10px">${item.dateStr}</span></div>
+            el.innerHTML = `<div><strong>${escapeHtml(item.desc)}</strong><span class="cat-badge">${escapeHtml(item.cat)}</span> <span style="opacity:0.5;font-size:10px">${item.dateStr}</span></div>
                             <div>₹${item.amt}<button onclick="deleteExpense('${item.id}')" style="background:none;border:none;color:red;cursor:pointer;margin-left:10px;">x</button></div>`;
             listDiv.appendChild(el);
         });
+    }
+
+    function renderHistoryList(data) {
+        const listDiv = document.getElementById('history-list');
+        if(!listDiv) return;
+        listDiv.innerHTML = "";
+        data.forEach(item => {
+            const el = document.createElement('div');
+            el.style = "background:rgba(255,255,255,0.03); padding:10px; margin-bottom:8px; border-radius:8px; display:flex; justify-content:space-between; align-items:center;";
+            el.innerHTML = `<div>
+                <div style="font-weight:600">${escapeHtml(item.desc || item.cat)}</div>
+                <div style="font-size:12px; opacity:0.7">${escapeHtml(item.cat)} • ${item.dateStr}</div>
+            </div>
+            <div style="font-weight:700">₹${item.amt}</div>`;
+            listDiv.appendChild(el);
+        });
+    }
+
+    function filterHistory() {
+        const term = document.getElementById('history-search').value.toLowerCase();
+        const filtered = allExpensesData.filter(item => (item.desc||'').toLowerCase().includes(term) || (item.cat||'').toLowerCase().includes(term));
+        renderHistoryList(filtered);
     }
 
     function renderBudgets(data, income) {
@@ -523,7 +681,7 @@
             const limitAmt = income * (limits[cat] || 0.10);
             const pct = Math.min((total / limitAmt) * 100, 100);
             let color = ""; if(pct > 100) color = "over"; else if(pct > 80) color = "warn";
-            html += `<div class="budget-item"><div class="budget-header"><span>${cat}</span><span>₹${total} / ₹${limitAmt.toFixed(0)}</span></div>
+            html += `<div class="budget-item"><div class="budget-header"><span>${escapeHtml(cat)}</span><span>₹${total} / ₹${limitAmt.toFixed(0)}</span></div>
                      <div class="progress-track"><div class="progress-fill ${color}" style="width: ${pct}%"></div></div></div>`;
         }
         document.getElementById('budget-bars').innerHTML = html || "<div style='text-align:center;opacity:0.5;font-size:11px'>No spending yet</div>";
@@ -574,8 +732,22 @@
         const txt = diff > 0 ? `Spent ₹${diff} more than last month.` : `Saved ₹${Math.abs(diff)} vs last month!`;
         document.getElementById('comp-insight-text').innerText = prev === 0 ? "Not enough data yet." : txt;
     }
+
+    // Simple HTML escape to avoid injecting raw cache content
+    function escapeHtml(unsafe) {
+        if (unsafe === null || unsafe === undefined) return '';
+        return String(unsafe)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+    }
+
+    // Initialize: try to keep a cached view hidden (no auto show)
+    (function init() {
+        // nothing automatic — user may click "View cached history"
+    })();
 </script>
 </body>
-
 </html>
-
