@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Expense & Savings Pro</title>
 
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💸</text></svg>">
@@ -172,8 +172,8 @@
         .toast { background: rgba(0,0,0,0.8); backdrop-filter: blur(10px); color: #fff; padding: 15px 25px; border-radius: 12px; margin-bottom: 10px; border-left: 5px solid; animation: fadeInUp 0.4s forwards; }
         .toast.success { border-color: var(--success); } .toast.error { border-color: var(--danger); }
 
-        /* Cache banner */
-        #cache-banner { display:none; padding:8px 12px; border-radius:10px; background: rgba(0,0,0,0.45); color:#fff; text-align:center; margin-bottom:12px; border-left:4px solid var(--warning); font-size:13px; }
+        /* Cache banner (keeps original look) */
+        #cache-banner { display: none; margin-bottom: 12px; padding: 10px 14px; border-radius: 12px; background: rgba(0,0,0,0.45); border-left: 4px solid var(--warning); color: #fff; font-size: 13px; text-align:center; }
 
         @media (max-width: 900px) {
             .dashboard-grid { grid-template-columns: 1fr; }
@@ -205,15 +205,16 @@
                 <div class="btn-group" style="flex-direction: column; gap: 15px; margin-top: 10px;">
                     <button class="primary" onclick="signIn()">Login</button>
                     <button class="secondary" onclick="signUp()">Register</button>
-                    <button class="secondary" onclick="showCachedFromAuthCard()" title="View cached history without logging in">View cached history</button>
+                    <button class="secondary" onclick="showCachedFromAuthCard()">View cached history</button>
                 </div>
             </div>
         </div>
     </div>
 
     <div id="app-content" style="display:none;">
+        <!-- cache banner inserted but styled to match app -->
         <div id="cache-banner">You are viewing <strong>cached</strong> data. Log in to see live data.</div>
-
+        
         <div style="text-align: center; margin-bottom: 10px;">
             <div class="badge-container" id="badge-case"></div>
             <h1>Expense & Savings Pro</h1>
@@ -329,7 +330,7 @@
         <div id="view-history" class="view-section">
             <div class="card">
                 <h3>📚 Full History</h3>
-                <p style="font-size:13px; opacity:0.8; margin-bottom:12px;">Browse complete cached history. This will show live data when logged in.</p>
+                <p style="font-size:13px; opacity:0.8; margin-bottom:12px;">Browse cached or live history for the signed-in user. This will show live data when you're logged in.</p>
                 <div style="display:flex; gap:8px; margin-bottom:12px;">
                     <input id="history-search" placeholder="Search history..." oninput="filterHistory()" style="flex:1">
                     <button class="secondary" onclick="clearCache()">Clear Cache</button>
@@ -343,12 +344,12 @@
 </div>
 
 <footer>
-    &copy; 2025 Expense & Savings Pro. Designed by 
-    <a href="https://niharreddnam.vercel.app/" target="_blank">Nihar Reddnam</a> • 
-    <a href="https://niharreddnam.vercel.app/" target="_blank">Portfolio</a>
+     &copy; 2025 Expense & Savings Pro. Designed by 
+    <a href="#" target="_blank">Nihar Reddnam</a> • 
+    <a href="https://niharreddnam.vercel.app/" target="_blank">My Portfolio</a>
 </footer>
 
-<!-- Reference: original file used as base for modifications. --> 
+<!-- Reference: original file used as base for modifications. -->
 <!-- :contentReference[oaicite:1]{index=1} -->
 
 <script>
@@ -372,36 +373,145 @@
     let barChart = null;
     let allExpensesData = []; 
     let isCachedView = false; // true when showing cached data
+    let userUnsub = null;
+    let itemsUnsub = null;
 
-    // --- NAVIGATION ---
-    function switchTab(tabName) {
-        document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
-        document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
-        document.getElementById(`view-${tabName}`).classList.add('active');
-        
-        // Highlight logic
-        const btns = document.querySelectorAll('.nav-btn');
-        if(tabName === 'dashboard') btns[0].classList.add('active');
-        if(tabName === 'notes') btns[1].classList.add('active');
-        if(tabName === 'comparison') btns[2].classList.add('active');
-        if(tabName === 'history') btns[3].classList.add('active');
+    function showToast(msg, type='info') {
+        const t = document.createElement('div');
+        t.className = `toast ${type}`; t.innerText = msg;
+        document.getElementById('toast-container').appendChild(t);
+        setTimeout(() => t.remove(), 3000);
     }
 
-    // --- AUTH ---
+    function escapeHtml(unsafe) {
+        if (unsafe === null || unsafe === undefined) return '';
+        return String(unsafe)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+    }
+
+    /* ---------- Per-user cache helpers ---------- */
+    // store cache under a user-specific key
+    function cacheKeyFor(uid) {
+        return `esp_cache_${uid}`;
+    }
+
+    function saveCacheToLocalForUser(expensesArr, income, note, uid) {
+        if (!uid) return;
+        try {
+            const payload = {
+                ts: Date.now(),
+                income: income || 0,
+                note: note || "",
+                expenses: (expensesArr || []).map(it => ({
+                    id: it.id || null,
+                    desc: it.desc || '',
+                    cat: it.cat || '',
+                    amt: it.amt || 0,
+                    dateObj: it.dateObj ? it.dateObj.toISOString() : new Date().toISOString(),
+                    dateStr: it.dateStr || (new Date().toLocaleDateString('en-IN', {month:'short', day:'numeric'}))
+                }))
+            };
+            localStorage.setItem(cacheKeyFor(uid), JSON.stringify(payload));
+            // optional: keep a quick index of cached uids
+            const idx = JSON.parse(localStorage.getItem('esp_cache_index') || "[]");
+            if (!idx.includes(uid)) {
+                idx.push(uid);
+                localStorage.setItem('esp_cache_index', JSON.stringify(idx));
+            }
+        } catch (e) {
+            console.warn("Cache save failed", e);
+        }
+    }
+
+    function loadCacheForUser(uid) {
+        if (!uid) return null;
+        try {
+            const raw = localStorage.getItem(cacheKeyFor(uid));
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (e) {
+            console.warn("Cache load failed", e);
+            return null;
+        }
+    }
+
+    function clearCacheForCurrentUser() {
+        if (!userId) {
+            // if no userId (logged out) but cached UI active, try to remove last-used cache key from UI input
+            showToast("No active user to clear cache for", "error");
+            return;
+        }
+        if (confirm("Clear cached history for this user? This cannot be undone.")) {
+            localStorage.removeItem(cacheKeyFor(userId));
+            // update index too
+            const idx = JSON.parse(localStorage.getItem('esp_cache_index') || "[]").filter(x => x !== userId);
+            localStorage.setItem('esp_cache_index', JSON.stringify(idx));
+            allExpensesData = [];
+            renderHistoryList([]);
+            showToast("Cache cleared for this user", "success");
+            if (isCachedView) {
+                renderList([]);
+                renderBudgets([], 0);
+            }
+        }
+    }
+
+    /* ---------- Auth handling + load cache on sign-in ---------- */
     auth.onAuthStateChanged(user => {
+        console.log("onAuthStateChanged -> user:", user);
+        // detach previous listeners if any
+        if (typeof userUnsub === 'function') { userUnsub(); userUnsub = null; console.log("detached userUnsub"); }
+        if (typeof itemsUnsub === 'function') { itemsUnsub(); itemsUnsub = null; console.log("detached itemsUnsub"); }
+
         const wrapper = document.getElementById('main-wrapper');
         const footer = document.querySelector('footer');
         if (user) {
             userId = user.uid;
+            // First, try to render per-user cache immediately so user sees their previous data while live listeners attach
+            const cached = loadCacheForUser(userId);
+            if (cached) {
+                // restore cached view quickly
+                const income = cached.income || 0;
+                const note = cached.note || "";
+                const restored = (cached.expenses || []).map(item => {
+                    const d = Object.assign({}, item);
+                    d.dateObj = item.dateObj ? new Date(item.dateObj) : new Date();
+                    d.dateStr = item.dateStr || (d.dateObj.toLocaleDateString('en-IN', {month:'short', day:'numeric'}));
+                    return d;
+                });
+                allExpensesData = restored;
+                document.getElementById('income').value = income;
+                document.getElementById('user-note').value = note;
+                renderList(allExpensesData);
+                renderBudgets(allExpensesData, income);
+                const cats = {};
+                restored.forEach(d=> cats[d.cat] = (cats[d.cat]||0) + (d.amt||0));
+                updateCharts(cats, restored.reduce((s,i)=> s + (i.amt||0), 0), 0);
+                updateBadges(income, restored.reduce((s,i)=> s + (i.amt||0), 0), restored);
+                updateAdvisor(income, restored.reduce((s,i)=> s + (i.amt||0), 0), cats);
+                renderHistoryList(restored);
+                isCachedView = true;
+                document.getElementById('cache-banner').style.display = 'block';
+                showToast("Loaded your cached data — switching to live when available.", "info");
+            } else {
+                isCachedView = false;
+                document.getElementById('cache-banner').style.display = 'none';
+            }
+
             document.getElementById('auth-section').style.display = 'none';
             document.getElementById('app-content').style.display = 'block';
             document.body.classList.remove('login-mode');
             wrapper.classList.remove('auth-mode');
             footer.style.position = 'relative';
-            isCachedView = false;
-            document.getElementById('cache-banner').style.display = 'none';
+
+            // Now attach live listeners which will update UI and overwrite cache quickly
             loadData();
         } else {
+            console.log("Signed OUT");
             userId = null;
             document.getElementById('auth-section').style.display = 'block';
             document.getElementById('app-content').style.display = 'none';
@@ -412,12 +522,7 @@
         }
     });
 
-    function showToast(msg, type='info') {
-        const t = document.createElement('div');
-        t.className = `toast ${type}`; t.innerText = msg;
-        document.getElementById('toast-container').appendChild(t);
-        setTimeout(() => t.remove(), 3000);
-    }
+    /* ---------- Auth actions ---------- */
     function signIn() {
         const e = document.getElementById('email').value, p = document.getElementById('password').value;
         if(!e||!p) return showToast("Enter details", 'error');
@@ -429,16 +534,23 @@
         auth.createUserWithEmailAndPassword(e, p).catch(err => showToast(err.message, 'error'));
     }
     function signOut() { 
+        // detach listeners locally first
+        if (typeof userUnsub === 'function') { userUnsub(); userUnsub = null; console.log("userUnsub detached on signOut"); }
+        if (typeof itemsUnsub === 'function') { itemsUnsub(); itemsUnsub = null; console.log("itemsUnsub detached on signOut"); }
+
         auth.signOut().then(() => {
-            // keep cached UI hidden but let user opt-in to view cached via button
+            // keep cache on disk (per-user) — do not clear it
             isCachedView = false;
             document.getElementById('cache-banner').style.display = 'none';
             document.getElementById('app-content').style.display = 'none';
             document.getElementById('auth-section').style.display = 'block';
+        }).catch(err => {
+            console.error("signOut error", err);
+            showToast("Error signing out", "error");
         });
     }
 
-    // --- DATA ACTIONS ---
+    /* ---------- CRUD actions ---------- */
     function updateIncome() {
         const val = parseFloat(document.getElementById('income').value);
         if(!userId) { showToast("Login to save income", "error"); return; }
@@ -456,16 +568,25 @@
             document.getElementById('desc').value = "";
             document.getElementById('amount').value = "";
             showToast("Added!", "success");
+        }).catch(e => {
+            console.error("addExpense error", e);
+            showToast("Could not add expense", "error");
         });
     }
     function deleteExpense(id) {
         if(!userId) { showToast("Login to delete", "error"); return; }
-        if(confirm("Delete item?")) db.collection('expenses').doc(userId).collection('items').doc(id).delete();
+        if(confirm("Delete item?")) db.collection('expenses').doc(userId).collection('items').doc(id).delete().catch(e=>{console.error(e); showToast("Delete failed","error")});
     }
+
+    // Save note to Firestore and to per-user cache (note will also be saved by snapshot cache flow)
     function saveNote() {
         const note = document.getElementById('user-note').value;
         if(!userId) { showToast("Login to save note", "error"); return; }
-        db.collection('users').doc(userId).set({note: note}, {merge:true}).then(()=>showToast("Note Saved!", "success"));
+        db.collection('users').doc(userId).set({note: note}, {merge:true}).then(()=>{
+            // also save into local cache immediately for quick restore
+            saveCacheToLocalForUser(allExpensesData, parseFloat(document.getElementById('income').value || 0), note, userId);
+            showToast("Note Saved!", "success");
+        }).catch(e => { console.error("saveNote error", e); showToast("Could not save note", "error"); });
     }
 
     function exportToCSV() {
@@ -484,107 +605,51 @@
         renderList(filtered);
     }
 
-    // ---------- Local cache helpers ----------
-    function saveCacheToLocal(expensesArr, income) {
-        try {
-            // store a reduced representation to avoid circulars
-            const payload = {
-                ts: Date.now(),
-                income: income || 0,
-                expenses: (expensesArr || []).map(it => ({
-                    id: it.id || null,
-                    desc: it.desc || '',
-                    cat: it.cat || '',
-                    amt: it.amt || 0,
-                    dateObj: it.dateObj ? it.dateObj.toISOString() : (it.createdAt ? (new Date(it.createdAt)).toISOString() : new Date().toISOString()),
-                    dateStr: it.dateStr || (new Date().toLocaleDateString('en-IN', {month:'short', day:'numeric'}))
-                }))
-            };
-            localStorage.setItem('esp_cache', JSON.stringify(payload));
-        } catch (e) {
-            console.warn("Cache save failed", e);
-        }
-    }
-
-    function clearCache() {
-        if(confirm("Clear cached history? This cannot be undone.")) {
-            localStorage.removeItem('esp_cache');
-            allExpensesData = [];
-            renderHistoryList([]);
-            showToast("Cache cleared", "success");
-            // if cached view is active, clear UI
-            if(isCachedView) {
-                renderList([]);
-                renderBudgets([], 0);
-                renderHistoryList([]);
-            }
-        }
-    }
-
-    // load cache and optionally show UI
-    function loadCacheAndRender(showUI = true) {
-        try {
-            const raw = localStorage.getItem('esp_cache');
-            if (!raw) return false;
-            const cache = JSON.parse(raw);
-            const income = cache.income || 0;
-            const expenses = cache.expenses || [];
-
-            // restore date objects
-            const restored = expenses.map(item => {
-                const d = Object.assign({}, item);
-                d.dateObj = item.dateObj ? new Date(item.dateObj) : new Date();
-                d.dateStr = item.dateStr || (d.dateObj.toLocaleDateString('en-IN', {month:'short', day:'numeric'}));
-                return d;
-            });
-
-            allExpensesData = restored;
-            if (showUI) {
-                document.getElementById('auth-section').style.display = 'none';
-                document.getElementById('app-content').style.display = 'block';
-            }
-            isCachedView = true;
-            document.getElementById('cache-banner').style.display = 'block';
-
-            document.getElementById('income').value = income;
-            document.getElementById('user-note').value = ""; // optional
-
-            renderList(allExpensesData);
-            renderBudgets(allExpensesData, income);
-            const cats = {};
-            restored.forEach(d => { cats[d.cat] = (cats[d.cat] || 0) + (d.amt || 0); });
-            updateCharts(cats, restored.reduce((s,i)=> s + (i.amt||0), 0), 0);
-            updateBadges(income, restored.reduce((s,i)=> s + (i.amt||0), 0), restored);
-            updateAdvisor(income, restored.reduce((s,i)=> s + (i.amt||0), 0), cats);
-            renderHistoryList(restored);
-            showToast("Showing cached data — log in to see live data.", "info");
-            return true;
-        } catch (e) {
-            console.warn("Cache load failed", e);
-            return false;
-        }
-    }
-
+    /* ---------- Cache button on login card ---------- */
     function showCachedFromAuthCard() {
-        const ok = loadCacheAndRender(true);
+        // If user is logged-in, use their uid; otherwise offer a small chooser: try last cached user
+        if (auth.currentUser && auth.currentUser.uid) {
+            const ok = loadCacheAndRenderForUser(auth.currentUser.uid, true);
+            if (!ok) showToast("No cached data available for your account", "error");
+            return;
+        }
+        // if not signed in, try to show most-recent cached user (from index)
+        const idx = JSON.parse(localStorage.getItem('esp_cache_index') || "[]");
+        if (idx.length === 0) { showToast("No cached users found", "error"); return; }
+        // show the most recently cached user's data
+        const lastUid = idx[idx.length - 1];
+        const ok = loadCacheAndRenderForUser(lastUid, true);
         if (!ok) showToast("No cached data available", "error");
     }
 
-    // ---------- END: Local cache helpers ----------
-
-    // --- LOAD DATA ---
+    /* ---------- loadData: attaches snapshots and saves per-user cache ---------- */
     function loadData() {
+        if (!userId) {
+            console.warn("loadData called but userId is null — skipping");
+            return;
+        }
+
+        // detach old listeners if present
+        if (typeof userUnsub === 'function') { userUnsub(); userUnsub = null; }
+        if (typeof itemsUnsub === 'function') { itemsUnsub(); itemsUnsub = null; }
+
         // listen to user profile (income/note)
-        db.collection('users').doc(userId).onSnapshot(doc => {
+        userUnsub = db.collection('users').doc(userId).onSnapshot(doc => {
             const data = doc.data() || {};
             const inc = data.income || 0;
             const note = data.note || "";
             document.getElementById('income').value = inc;
             document.getElementById('user-note').value = note;
             if(allExpensesData.length > 0) renderBudgets(allExpensesData, inc);
+            // also save cache using latest note
+            try { saveCacheToLocalForUser(allExpensesData, inc, note, userId); } catch(e){console.warn(e);}
+        }, err => {
+            console.error("user doc snapshot error:", err);
+            showToast("Error reading profile data", "error");
         });
 
-        db.collection('expenses').doc(userId).collection('items').orderBy('createdAt', 'desc')
+        // listen to expenses items and keep unsub handle
+        itemsUnsub = db.collection('expenses').doc(userId).collection('items').orderBy('createdAt', 'desc')
         .onSnapshot(snap => {
             allExpensesData = [];
             const now = new Date();
@@ -617,7 +682,8 @@
             saveEl.style.color = savings >= 0 ? '#69f0ae' : '#ff8a80';
             
             // Update Note Page display
-            document.getElementById('note-savings-display').innerText = savings.toLocaleString('en-IN');
+            const noteSavingsEl = document.getElementById('note-savings-display');
+            if(noteSavingsEl) noteSavingsEl.innerText = savings.toLocaleString('en-IN');
 
             renderList(allExpensesData);
             updateCharts(categories, thisMoTotal, lastMoTotal);
@@ -625,16 +691,19 @@
             updateBadges(income, thisMoTotal, allExpensesData);
             updateAdvisor(income, thisMoTotal, categories);
 
-            // save a local cache copy for offline viewing
+            // save a local cache copy for offline viewing (include current note input)
             try {
-                saveCacheToLocal(allExpensesData, income);
+                const currentNote = document.getElementById('user-note').value || "";
+                saveCacheToLocalForUser(allExpensesData, income, currentNote, userId);
             } catch(e) { console.warn("cache save error", e); }
             renderHistoryList(allExpensesData);
         }, err => {
-            console.warn("Snapshot error", err);
+            console.error("items snapshot error:", err);
+            showToast("Error reading expenses", "error");
         });
     }
 
+    /* ---------- render helpers ---------- */
     function renderList(data) {
         const listDiv = document.getElementById('expenses-list');
         listDiv.innerHTML = "";
@@ -653,7 +722,7 @@
         listDiv.innerHTML = "";
         data.forEach(item => {
             const el = document.createElement('div');
-            el.style = "background:rgba(255,255,255,0.03); padding:10px; margin-bottom:8px; border-radius:8px; display:flex; justify-content:space-between; align-items:center;";
+            el.style = "background: rgba(255,255,255,0.03); padding: 10px; margin-bottom: 8px; border-radius: 8px; display:flex; justify-content:space-between; align-items:center;";
             el.innerHTML = `<div>
                 <div style="font-weight:600">${escapeHtml(item.desc || item.cat)}</div>
                 <div style="font-size:12px; opacity:0.7">${escapeHtml(item.cat)} • ${item.dateStr}</div>
@@ -729,25 +798,24 @@
         });
         
         const diff = curr - prev;
-        const txt = diff > 0 ? `Spent ₹${diff} more than last month.` : `Saved ₹${Math.abs(diff)} vs last month!`;
-        document.getElementById('comp-insight-text').innerText = prev === 0 ? "Not enough data yet." : txt;
+        const txt = prev === 0 ? "Not enough data yet." : (diff > 0 ? `Spent ₹${diff} more than last month.` : `Saved ₹${Math.abs(diff)} vs last month!`);
+        document.getElementById('comp-insight-text').innerText = txt;
     }
 
-    // Simple HTML escape to avoid injecting raw cache content
-    function escapeHtml(unsafe) {
-        if (unsafe === null || unsafe === undefined) return '';
-        return String(unsafe)
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#039;");
+    function switchTab(tabName) {
+        document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+        document.getElementById(`view-${tabName}`).classList.add('active');
+        
+        const btns = document.querySelectorAll('.nav-btn');
+        if(tabName === 'dashboard') btns[0].classList.add('active');
+        if(tabName === 'notes') btns[1].classList.add('active');
+        if(tabName === 'comparison') btns[2].classList.add('active');
+        if(tabName === 'history') btns[3].classList.add('active');
     }
 
-    // Initialize: try to keep a cached view hidden (no auto show)
-    (function init() {
-        // nothing automatic — user may click "View cached history"
-    })();
+    // Attempt no automatic cached show by default
+    (function init() {})();
 </script>
 </body>
 </html>
